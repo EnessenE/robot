@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "robot",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"cstddef": "cpp"
+		}
+	}
+}
