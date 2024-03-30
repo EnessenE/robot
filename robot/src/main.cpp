@@ -1,19 +1,54 @@
 #include <Arduino.h>
+// Pin setup
+enum PinSetup : byte
+{
+  enuPinSetupUnused,
+  enuPinSetupInput,
+  enuPinSetupInputLatchingHigh,
+  enuPinSetupInputLatchingLow,
+  enuPinSetupOutput,
+  enuPinSetupOutputPWM,
+  enuPinSetupMeccanoid
+};
 
-byte arrMeccanoidData[4];
-byte arrMeccanoidType[4];
-
-byte arrCurrentValue[4];
-byte arrStartValue[4];
-byte arrEndValue[4];
-
-void setMotorPosition(int angle);
 byte meccanoidReceiveByte(byte bytPin);
 byte meccanoidCommunicate(byte bytPin, byte bytPosition);
 void meccanoidSendByte(byte bytPin, byte bytData);
 byte meccanoidGetServoMotorPosition(byte bytPin, byte bytPosition);
 void meccanoidInitialise(byte bytPin);
-void motorAndSuch(int steps);
+void reset();
+void iterateAllPins();
+
+void setMotorPosition(byte partPin, byte pinInArray, byte angle);
+
+const byte bytLowestDigitalPin = PIN0;
+const byte bytHighestDigitalPin = PIN7;
+
+const byte bytLowestAnalogPin = PIN_A0;
+const byte bytHighestAnalogPin = PIN_A5;
+
+PinSetup arrDigitalPinSetup[bytHighestDigitalPin + 1];
+PinSetup arrAnalogPinSetup[bytHighestAnalogPin + 1];
+
+// Latch
+const unsigned int intLatchDebounceInterval = 500;
+
+bool arrDigitalLatchTriggered[bytHighestDigitalPin + 1];
+unsigned long arrDigitalLatchDebounceStartTime[bytHighestDigitalPin + 1];
+bool arrAnalogLatchTriggered[bytHighestAnalogPin + 1];
+unsigned long arrAnalogLatchDebounceStartTime[bytHighestAnalogPin + 1];
+
+// State
+byte arrCurrentValue[bytHighestDigitalPin + 1][4];
+byte arrStartValue[bytHighestDigitalPin + 1][4];
+byte arrEndValue[bytHighestDigitalPin + 1][4];
+
+unsigned int arrDuration[bytHighestDigitalPin + 1][4];
+unsigned long arrStartTime[bytHighestDigitalPin + 1][4];
+
+// Meccanoid
+byte arrMeccanoidData[bytHighestDigitalPin + 1][4];
+byte arrMeccanoidType[bytHighestDigitalPin + 1][4];
 
 void setup()
 {
@@ -21,52 +56,364 @@ void setup()
   Serial.begin(9600);
   delay(1000);
   Serial.println("Init");
-
-  // Send reset
-  for (byte bytLoopPosition = 0; bytLoopPosition < 4; bytLoopPosition++)
-  {
-    arrMeccanoidData[bytLoopPosition] = 0xFD;
-    meccanoidCommunicate(PIN2, bytLoopPosition);
-  }
+  reset();
   meccanoidInitialise(PIN2);
-  pinMode(PIN2, OUTPUT);
   Serial.println("Init finished");
 }
 
 void loop()
 {
-  Serial.println("OK");
+  Serial.println("Loop start");
+  iterateAllPins();
 
-  setMotorPosition(random(24, 233));
+  setMotorPosition(PIN2, 0, random(24, 233));
+  setMotorPosition(PIN2, 1, random(24, 233));
   Serial.println("Set motor position, waiting 5");
-  delay(5000);
+  delay(2000);
 }
 
-void setMotorPosition(int angle)
+void setMotorPosition(byte partPin, byte partInArray, byte angle)
 {
-  Serial.println("Angling");
-  Serial.println((int)angle);
-  byte bytPin = PIN_A0;
-  // Get the servo position - keep getting returned position until two readings match and are non-zero
+  Serial.println("Requesting " + String(partPin) + " - " + String(partInArray) + " to move to " + String(angle));
+  byte bytPosition = angle;
 
-  arrMeccanoidData[0] = angle;
-  arrMeccanoidType[0] = 1;
-  // arrMeccanoidData[1] = NULL;
-  // arrMeccanoidData[2] = NULL;
-  // arrMeccanoidData[3] = NULL;
-  // arrMeccanoidType[1] = NULL;
-  // arrMeccanoidType[2] = NULL;
-  // arrMeccanoidType[3] = NULL;
+  int randomTime = 1000;
+  // Ensure the position values are within end stop range
+  if (bytPosition < 24)
+  {
+    bytPosition = 24;
+  }
+  if (bytPosition > 232)
+  {
+    bytPosition = 232;
+  }
 
-  meccanoidCommunicate(bytPin, 0);
-  // byte bytReturnedValue = 0;
-  // byte bytLastReturnedValue = 0;
+  // Get the servo position if it currently disabled
+  if (arrMeccanoidData[partPin][partInArray] == 0xFA)
+  {
+    arrCurrentValue[partPin][partInArray] = meccanoidGetServoMotorPosition(partPin, partInArray);
+  }
 
-  // do
-  // {
-  //   bytLastReturnedValue = bytReturnedValue;
-  //   bytReturnedValue = meccanoidCommunicate(bytPin, angle);
-  // } while (bytReturnedValue == 0 || bytReturnedValue != bytLastReturnedValue);
+  // Store the start value, end value, start time and duration
+  arrStartValue[partPin][partInArray] = arrCurrentValue[partPin][partInArray];
+  arrEndValue[partPin][partInArray] = bytPosition;
+  Serial.println("Current end val match " + String(arrCurrentValue[partPin][partInArray]) + " vs " + String(arrEndValue[partPin][partInArray]));
+  Serial.println("Current end val match " + String(arrCurrentValue[partPin][bytPosition]) + " vs " + String(arrEndValue[partPin][bytPosition]));
+
+  arrStartTime[partPin][partInArray] = millis();
+  arrDuration[partPin][partInArray] = randomTime;
+}
+
+//******************************************************************************************************************************************************************************************************
+// MECCANOID FUNCTIONS
+//******************************************************************************************************************************************************************************************************
+
+void iterateAllPins()
+{
+  Serial.println("Iterating through ALL pins!");
+  // Iterate through digital pins
+  for (byte bytPin = bytLowestDigitalPin; bytPin <= bytHighestDigitalPin; bytPin++)
+  {
+
+    Serial.println("Pin " + String(bytPin) + " - " + String(arrDigitalPinSetup[bytPin]));
+    switch (arrDigitalPinSetup[bytPin])
+    {
+    case enuPinSetupInputLatchingHigh:
+    {
+      // Check input for high latch trigger
+      if (digitalRead(bytPin) && millis() - arrDigitalLatchDebounceStartTime[bytPin] > intLatchDebounceInterval)
+      {
+        arrDigitalLatchTriggered[bytPin] = true;
+        arrDigitalLatchDebounceStartTime[bytPin] = millis();
+      }
+      break;
+    }
+    case enuPinSetupInputLatchingLow:
+    {
+      // Check input for low latch trigger
+      if (!digitalRead(bytPin) && millis() - arrDigitalLatchDebounceStartTime[bytPin] > intLatchDebounceInterval)
+      {
+        arrDigitalLatchTriggered[bytPin] = true;
+        arrDigitalLatchDebounceStartTime[bytPin] = millis();
+      }
+      break;
+    }
+    case enuPinSetupOutputPWM:
+    {
+      // Change PWM values
+
+      // Does the current value equal the end value?
+      if (arrCurrentValue[bytPin][0] != arrEndValue[bytPin][0])
+      {
+        // Calculate the new value
+        if ((millis() - arrStartTime[bytPin][0]) >= arrDuration[bytPin][0])
+        {
+          arrCurrentValue[bytPin][0] = arrEndValue[bytPin][0];
+        }
+        else
+        {
+          arrCurrentValue[bytPin][0] = arrStartValue[bytPin][0] + (((float)(millis() - arrStartTime[bytPin][0]) / arrDuration[bytPin][0]) * (arrEndValue[bytPin][0] - arrStartValue[bytPin][0]));
+        }
+
+        // Set the PWM output
+        analogWrite(bytPin, arrCurrentValue[bytPin][0]);
+      }
+      break;
+    }
+    case enuPinSetupMeccanoid:
+    {
+      // Change servo values
+      byte bytValue;
+      bool booUpdate = false;
+
+      for (byte bytPosition = 0; bytPosition < 4; bytPosition++)
+      {
+
+        Serial.println("Checking for update " + String(bytPin) + " - " + String(bytPosition));
+        if (arrMeccanoidType[bytPin][bytPosition] == 1)
+        {
+          Serial.println("Servo detected " + String(bytPin) + " - " + String(bytPosition));
+
+          // Does the current value equal the end value?
+          if (arrCurrentValue[bytPin][bytPosition] != arrEndValue[bytPin][bytPosition])
+          {
+            Serial.println("Update found for servo " + String(bytPin) + " - " + String(bytPosition));
+
+            // Calculate the new value
+            if ((millis() - arrStartTime[bytPin][bytPosition]) >= arrDuration[bytPin][bytPosition])
+            {
+              bytValue = arrEndValue[bytPin][bytPosition];
+            }
+            else
+            {
+              bytValue = arrStartValue[bytPin][bytPosition] + (((float)(millis() - arrStartTime[bytPin][bytPosition]) / arrDuration[bytPin][bytPosition]) * (arrEndValue[bytPin][bytPosition] - arrStartValue[bytPin][bytPosition]));
+            }
+
+            // Set the servo value, if there has been a change
+            if (bytValue != arrCurrentValue[bytPin][bytPosition])
+            {
+              arrCurrentValue[bytPin][bytPosition] = bytValue;
+              arrMeccanoidData[bytPin][bytPosition] = bytValue;
+              booUpdate = true;
+            }
+            else
+            {
+              Serial.println("No update for servo " + String(bytPin) + " - " + String(bytPosition));
+            }
+          }
+          else
+          {
+            Serial.println("Current end val match " + String(arrCurrentValue[bytPin][bytPosition]) + " vs " + String(arrEndValue[bytPin][bytPosition]));
+          }
+        }
+        else
+        {
+          Serial.println("Not a servo " + String(bytPin) + " - " + String(bytPosition));
+        }
+      }
+
+      // Only update if there has been a change to at least one servo value
+      if (booUpdate)
+      {
+        meccanoidCommunicate(bytPin, 0);
+      }
+
+      break;
+    }
+    default:
+    {
+      // Do nothing
+    }
+    }
+
+    // Iterate through analogue pins
+    for (byte bytPin = bytLowestAnalogPin; bytPin <= bytHighestAnalogPin; bytPin++)
+    {
+      switch (arrAnalogPinSetup[bytPin])
+      {
+      case enuPinSetupInputLatchingHigh:
+      {
+        // Check input for high latch trigger
+        if (analogRead(bytPin) > 255 && millis() - arrAnalogLatchDebounceStartTime[bytPin] > intLatchDebounceInterval)
+        {
+          arrAnalogLatchTriggered[bytPin] = true;
+          arrAnalogLatchDebounceStartTime[bytPin] = millis();
+        }
+        break;
+      }
+      case enuPinSetupInputLatchingLow:
+      {
+        // Check input for low latch trigger
+        if (analogRead(bytPin) < 256 && millis() - arrAnalogLatchDebounceStartTime[bytPin] > intLatchDebounceInterval)
+        {
+          arrAnalogLatchTriggered[bytPin] = true;
+          arrAnalogLatchDebounceStartTime[bytPin] = millis();
+        }
+        break;
+      }
+      default:
+      {
+        // Do nothing
+      }
+      }
+    }
+  }
+}
+
+void reset()
+{
+  Serial.println("Resetting pins");
+  // Reset digital pins
+  for (byte bytPin = bytLowestDigitalPin; bytPin <= bytHighestDigitalPin; bytPin++)
+  {
+    Serial.println("Resetting digital pin " + String(bytPin));
+    // Pins default to unused inputs
+    arrDigitalPinSetup[bytPin] = enuPinSetupUnused;
+    pinMode(bytPin, INPUT);
+
+    // Reset latch
+    arrDigitalLatchTriggered[bytPin] = false;
+    arrDigitalLatchDebounceStartTime[bytPin] = 0;
+
+    // Reset state
+    for (byte bytPosition = 0; bytPosition <= 3; bytPosition++)
+    {
+      arrCurrentValue[bytPin][bytPosition] = 0;
+      arrStartValue[bytPin][bytPosition] = 0;
+      arrEndValue[bytPin][bytPosition] = 0;
+      arrDuration[bytPin][bytPosition] = 0;
+      arrStartTime[bytPin][bytPosition] = 0;
+    }
+  }
+  Serial.println("Finished going through ALL pins!");
+}
+
+void meccanoidInitialise(byte bytPin)
+{
+  Serial.println("Initializing digital pin " + String(bytPin));
+  byte bytInput;
+  byte bytPosition = 0;
+  byte bytTimeout = 0;
+  bool booAllPositionsDiscovered;
+
+  // Is this pin already setup for Meccanoid use?
+  if (arrDigitalPinSetup[bytPin] == enuPinSetupMeccanoid)
+  {
+    Serial.println(F("OK"));
+    return;
+  }
+
+  // Send reset
+  for (byte bytLoopPosition = 0; bytLoopPosition < 4; bytLoopPosition++)
+  {
+    arrMeccanoidData[bytPin][bytLoopPosition] = 0xFD;
+    meccanoidCommunicate(bytPin, bytLoopPosition);
+  }
+
+  // Set positions and types as unassigned
+  for (byte bytLoopPosition = 0; bytLoopPosition < 4; bytLoopPosition++)
+  {
+    arrMeccanoidData[bytPin][bytLoopPosition] = 0xFE;
+    arrMeccanoidType[bytPin][bytLoopPosition] = 255;
+  }
+
+  do
+  {
+    bytInput = meccanoidCommunicate(bytPin, bytPosition);
+
+    // If 0xFE is received, then the module exists so get its type
+    if (bytInput == 0xFE)
+    {
+      arrMeccanoidData[bytPin][bytPosition] = 0xFC;
+    }
+
+    // If 0x01 is received, the module is a servo, so change its colour to black
+    if (bytInput == 0x01 && arrMeccanoidType[bytPin][bytPosition] == 255)
+    {
+      Serial.println("Detected a servo");
+      arrMeccanoidData[bytPin][bytPosition] = 0xF0;
+      arrMeccanoidType[bytPin][bytPosition] = 1;
+    }
+
+    // If 0x02 is received, the module is an LED
+    if (bytInput == 0x02 && arrMeccanoidType[bytPin][bytPosition] == 255)
+    {
+      Serial.println("Detected a LED");
+      arrMeccanoidData[bytPin][bytPosition] = 0x00;
+      arrMeccanoidType[bytPin][bytPosition] = 2;
+    }
+
+    // If 0x00 is received, there is no module at this or higher positions
+    if (bytInput == 0x00 && bytPosition > 0)
+    {
+      if (arrMeccanoidType[bytPin][bytPosition - 1] != 255)
+      {
+        arrMeccanoidData[bytPin][bytPosition] = 0xFE;
+        arrMeccanoidType[bytPin][bytPosition] = 0;
+      }
+    }
+
+    // See if all positions have been discovered
+    booAllPositionsDiscovered = true;
+    for (byte bytLoopPosition = 0; bytLoopPosition < 4; bytLoopPosition++)
+    {
+      if (arrMeccanoidType[bytPin][bytLoopPosition] == 255)
+      {
+        booAllPositionsDiscovered = false;
+      }
+    }
+
+    // Move to the next position
+    bytPosition++;
+    if (bytPosition == 4)
+    {
+      bytPosition = 0;
+    }
+
+    bytTimeout++;
+  } while (!booAllPositionsDiscovered && bytTimeout != 0);
+
+  if (bytTimeout == 0)
+  {
+    // This pin is now unused
+    arrDigitalPinSetup[bytPin] = enuPinSetupUnused;
+
+    Serial.println(F("Timed out"));
+  }
+  else
+  {
+    for (byte bytLoopPosition = 0; bytLoopPosition < 4; bytLoopPosition++)
+    {
+      if (arrMeccanoidType[bytPin][bytLoopPosition] == 1)
+      {
+        Serial.println("Writing to servo " + String(bytPin) + " - " + String(bytLoopPosition));
+        // Set servo LED to black
+        arrMeccanoidData[bytPin][bytLoopPosition] = 0xF0;
+
+        // Get the servo position
+        arrCurrentValue[bytPin][bytLoopPosition] = meccanoidGetServoMotorPosition(bytPin, bytLoopPosition);
+        Serial.println("Servo position: " + String(arrCurrentValue[bytPin][bytLoopPosition]));
+        arrEndValue[bytPin][bytLoopPosition] = arrCurrentValue[bytPin][bytLoopPosition];
+      }
+
+      if (arrMeccanoidType[bytPin][bytLoopPosition] == 2)
+      {
+        Serial.println("Writing to LED " + String(bytPin) + " - " + String(bytLoopPosition));
+        // Set LED to black
+        arrMeccanoidData[bytPin][bytLoopPosition] = 0x00;
+        meccanoidCommunicate(bytPin, bytLoopPosition);
+        arrMeccanoidData[bytPin][bytLoopPosition] = 0x40;
+        meccanoidCommunicate(bytPin, bytLoopPosition);
+      }
+    }
+
+    // This pin is now a Meccanoid pin
+    arrDigitalPinSetup[bytPin] = enuPinSetupMeccanoid;
+
+    Serial.println("Init complete for digital pin " + String(bytPin));
+  }
+
+  return;
 }
 
 byte meccanoidCommunicate(byte bytPin, byte bytPosition)
@@ -78,19 +425,17 @@ byte meccanoidCommunicate(byte bytPin, byte bytPosition)
   // Send header
   meccanoidSendByte(bytPin, 0xFF);
 
-  Serial.println("Data:");
   for (byte bytLoopPosition = 0; bytLoopPosition < 4; bytLoopPosition++)
   {
     // Send 4 data bytes
-    meccanoidSendByte(bytPin, arrMeccanoidData[bytLoopPosition]);
-    Serial.println(arrMeccanoidData[bytLoopPosition]);
+    meccanoidSendByte(bytPin, arrMeccanoidData[bytPin][bytLoopPosition]);
   }
 
   // Calculate checksum
-  intCheckSum = arrMeccanoidData[0] + arrMeccanoidData[1] + arrMeccanoidData[2] + arrMeccanoidData[3]; // Ignore overflow
-  intCheckSum = intCheckSum + (intCheckSum >> 8);                                                      // Right shift 8 places
-  intCheckSum = intCheckSum + (intCheckSum << 4);                                                      // Left shift 4 places
-  intCheckSum = intCheckSum & 0xF0;                                                                    // Mask off top nibble
+  intCheckSum = arrMeccanoidData[bytPin][0] + arrMeccanoidData[bytPin][1] + arrMeccanoidData[bytPin][2] + arrMeccanoidData[bytPin][3]; // Ignore overflow
+  intCheckSum = intCheckSum + (intCheckSum >> 8);                                                                                      // Right shift 8 places
+  intCheckSum = intCheckSum + (intCheckSum << 4);                                                                                      // Left shift 4 places
+  intCheckSum = intCheckSum & 0xF0;                                                                                                    // Mask off top nibble
   bytCheckSum = intCheckSum | bytPosition;
 
   // Send checksum
@@ -102,6 +447,36 @@ byte meccanoidCommunicate(byte bytPin, byte bytPosition)
   delay(10);
 
   return bytInput;
+}
+
+void meccanoidSendByte(byte bytPin, byte bytData)
+{
+  const unsigned int intMeccanoidBitDelay = 417;
+
+  pinMode(bytPin, OUTPUT);
+  digitalWrite(bytPin, LOW);
+  delayMicroseconds(intMeccanoidBitDelay); // Start bit - 417us LOW
+
+  for (byte bytMask = 00000001; bytMask > 0; bytMask <<= 1)
+  { // Iterate through bit mask
+    if (bytData & bytMask)
+    { // If bitwise AND resolves to true
+
+      digitalWrite(bytPin, HIGH); // Send 1
+    }
+    else
+    { // If bitwise AND resolves to false
+
+      digitalWrite(bytPin, LOW); // Send 0
+    }
+    delayMicroseconds(intMeccanoidBitDelay); // Delay
+  }
+
+  digitalWrite(bytPin, HIGH);
+  delayMicroseconds(intMeccanoidBitDelay); // Stop bit - 417us HIGH
+
+  digitalWrite(bytPin, HIGH);
+  delayMicroseconds(intMeccanoidBitDelay); // Stop bit - 417us HIGH
 }
 
 byte meccanoidReceiveByte(byte bytPin)
@@ -125,35 +500,6 @@ byte meccanoidReceiveByte(byte bytPin)
   return bytTemp;
 }
 
-void meccanoidSendByte(byte bytPin, byte bytData)
-{
-  const unsigned int intMeccanoidBitDelay = 417;
-
-  pinMode(bytPin, OUTPUT);
-  digitalWrite(bytPin, LOW);
-  delayMicroseconds(intMeccanoidBitDelay); // Start bit - 417us LOW
-
-  for (byte bytMask = 00000001; bytMask > 0; bytMask <<= 1)
-  { // Iterate through bit mask
-    if (bytData & bytMask)
-    { // If bitwise AND resolves to true
-
-      digitalWrite(bytPin, HIGH); // Send 1
-    }
-    else
-    {                            // If bitwise AND resolves to false
-      digitalWrite(bytPin, LOW); // Send 0
-    }
-    delayMicroseconds(intMeccanoidBitDelay); // Delay
-  }
-
-  digitalWrite(bytPin, HIGH);
-  delayMicroseconds(intMeccanoidBitDelay); // Stop bit - 417us HIGH
-
-  digitalWrite(bytPin, HIGH);
-  delayMicroseconds(intMeccanoidBitDelay); // Stop bit - 417us HIGH
-}
-
 byte meccanoidGetServoMotorPosition(byte bytPin, byte bytPosition)
 {
   // Get the servo position - keep getting returned position until two readings match and are non-zero
@@ -167,61 +513,4 @@ byte meccanoidGetServoMotorPosition(byte bytPin, byte bytPosition)
   } while (bytReturnedValue == 0 || bytReturnedValue != bytLastReturnedValue);
 
   return bytReturnedValue;
-}
-
-void motorAndSuch(int steps)
-{
-  // // Determine step direction, number of steps and step interval
-  // int intNumberOfSteps = steps;
-  // bool booStepDirectionClockwise = (intNumberOfSteps > 0);
-  // intNumberOfSteps = abs(intNumberOfSteps);
-
-  // for (int intStep = 0; intStep < intNumberOfSteps; intStep++)
-  // {
-  //   // Determine the next step in the pattern
-  //   if (booStepDirectionClockwise)
-  //   {
-  //     switch (arrEndValue[0])
-  //     {
-  //     case B00000110:
-  //       arrEndValue[0] = B00000101;
-  //       break;
-  //     case B00000101:
-  //       arrEndValue[0] = B00001001;
-  //       break;
-  //     case B00001001:
-  //       arrEndValue[0] = B00001010;
-  //       break;
-  //     default:
-  //       arrEndValue[0] = B00000110;
-  //     }
-  //   }
-  //   else
-  //   {
-  //     switch (arrEndValue[0])
-  //     {
-  //     case B00000110:
-  //       arrEndValue[0] = B00001010;
-  //       break;
-  //     case B00000101:
-  //       arrEndValue[0] = B00000110;
-  //       break;
-  //     case B00001001:
-  //       arrEndValue[0] = B00000101;
-  //       break;
-  //     default:
-  //       arrEndValue[0] = B00001001;
-  //     }
-  //   }
-  //   // Set the outputs to high or low depending on their position in the pattern
-  //   digitalWrite(PIN2, arrEndValue[0] & B00001000);
-  //   digitalWrite(PIN2, arrEndValue[0] & B00000100);
-  //   digitalWrite(PIN2, arrEndValue[0] & B00000010);
-  //   digitalWrite(PIN2, arrEndValue[0] & B00000001);
-
-  //   // Wait until it is time for the next step
-  //   delay(10);
-  // }
-  // pinMode(PIN2, OUTPUT);
-  // pinMode(PIN2, HIGH);
 }
