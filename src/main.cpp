@@ -20,12 +20,14 @@ void reset();
 void iterateAllPins();
 
 void setMotorPosition(byte partPin, byte pinInArray, byte angle);
+void setServoLed(byte partPin, byte partInArray, byte color);
+void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fade);
 
-const byte bytLowestDigitalPin = PIN0;
-const byte bytHighestDigitalPin = PIN7;
+const byte bytLowestDigitalPin = D0;
+const byte bytHighestDigitalPin = D8;
 
-const byte bytLowestAnalogPin = PIN_A0;
-const byte bytHighestAnalogPin = PIN_A5;
+const byte bytLowestAnalogPin = A0;
+const byte bytHighestAnalogPin = A0;
 
 PinSetup arrDigitalPinSetup[bytHighestDigitalPin + 1];
 PinSetup arrAnalogPinSetup[bytHighestAnalogPin + 1];
@@ -57,7 +59,7 @@ void setup()
   delay(1000);
   Serial.println("Init");
   reset();
-  meccanoidInitialise(PIN2);
+  meccanoidInitialise(D2);
   Serial.println("Init finished");
 }
 
@@ -66,10 +68,50 @@ void loop()
   Serial.println("Loop start");
   iterateAllPins();
 
-  setMotorPosition(PIN2, 0, random(24, 233));
-  setMotorPosition(PIN2, 1, random(24, 233));
-  Serial.println("Set motor position, waiting 5");
+  // setMotorPosition(D2, 0, random(24, 233));
+  // setServoLed(D2, 0, random(0, 7));
+  // setMotorPosition(D2, 1, random(24, 233));
+  // setServoLed(D2, 1, random(0, 7));
+
+  setLed(D2, 0, random(0, 255), random(0, 255), random(0, 255), 0);
+
+  Serial.println("Set data, waiting 2s");
   delay(2000);
+}
+
+void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fade)
+{
+  Serial.println("Requesting " + String(partPin) + " - " + String(partInArray) + " to move to " + String(red) + "/" + String(green)+ "/" + String(blue)+ " - " + String(fade));
+
+  byte bytLED1 = 0;
+  byte bytLED2 = 0;
+
+  // Combine Red, Green, Blue and Fade values into two bytes: bytLED1 = 0GGGRRR; bytLED2 = 1FFFBBB
+  bytLED1 = 0x3F & (((green << 3) & 0x38) | (red & 0x07));
+  bytLED2 = 0x40 | (((fade << 3) & 0x38) | (blue & 0x07));
+
+  // Set the colour
+  arrMeccanoidData[partPin][partInArray] = bytLED1;
+  meccanoidCommunicate(partPin, 0);
+  arrMeccanoidData[partPin][partInArray] = bytLED2;
+  meccanoidCommunicate(partPin, 0);
+}
+
+void setServoLed(byte partPin, byte partInArray, byte color)
+{
+  Serial.println("Requesting " + String(partPin) + " - " + String(partInArray) + " to move to " + String(color));
+
+  byte bytColour = color;
+  // Ensure the position values are within end stop range
+  // Ensure the colour values are within range
+  if (bytColour > 7)
+  {
+    bytColour = 7;
+  }
+
+  // Set the colour
+  arrMeccanoidData[partPin][partInArray] = bytColour + 240;
+  meccanoidCommunicate(partPin, partInArray);
 }
 
 void setMotorPosition(byte partPin, byte partInArray, byte angle)
