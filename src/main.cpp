@@ -1,6 +1,4 @@
 #include <Arduino.h>
-#include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
 #ifdef ESP32
 #include <WiFi.h>
 #else
@@ -13,10 +11,6 @@
 
 const char *ssid = "X_WiFi";
 const char *password = "XVJGWVTB";
-
-AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
-const char index_html[] PROGMEM = R"rawliteral(OHNO!)rawliteral";
 
 // Pin setup
 enum PinSetup : byte
@@ -42,13 +36,10 @@ void setMotorPosition(byte partPin, byte pinInArray, byte angle);
 void setServoLed(byte partPin, byte partInArray, byte color);
 void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fade);
 
-void initWebSocket();
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-             void *arg, uint8_t *data, size_t len);
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len);
-void notifyClients();
-void connectToWifi();
-String processor(const String &var);
+void connectWiFi();
+void checkSerial();
+
+void handleCommand(String rawCommand);
 
 const byte bytLowestDigitalPin = D0;
 const byte bytHighestDigitalPin = D8;
@@ -79,6 +70,14 @@ unsigned long arrStartTime[bytHighestDigitalPin + 1][4];
 byte arrMeccanoidData[bytHighestDigitalPin + 1][4];
 byte arrMeccanoidType[bytHighestDigitalPin + 1][4];
 
+// runtime
+bool dataReceived = false;
+
+#define SendKey 0 // Button to send data Flash BTN on NodeMCU
+
+int port = 7331; // Port number
+WiFiServer server(port);
+
 void setup()
 {
   // Initialize serial port
@@ -87,18 +86,16 @@ void setup()
   Serial.println("Init");
   reset();
   meccanoidInitialise(D2);
+  setLed(D2, 0, 255, 0, 0, 0);
   Serial.println("Init finished");
-
-  Serial.print("ESP Board MAC Address:  ");
-  Serial.println(WiFi.macAddress());
-
-  connectToWifi();
+  connectWiFi();
 
   Serial.println("Finished with everything");
 }
+
 void loop()
 {
-  Serial.println("Loop start");
+  // Serial.println("Loop start");
   // iterateAllPins();
 
   // setMotorPosition(D2, 0, random(24, 233));
@@ -108,9 +105,86 @@ void loop()
 
   // setLed(D2, 0, random(0, 255), random(0, 255), random(0, 255), 0);
 
-  Serial.println("Set data, waiting 2s");
-  delay(2000);
+  checkSerial();
+  // if (!dataReceived)
+  // {
+  //   setLed(D2, 0, 0, 255, 0, 1);
+  //   delay(1000);
+  //   setLed(D2, 0, 0, 0, 0, 1);
+  // }
+  // delay(1000);
 }
+
+//******************************************************************************************************************************************************************************************************
+// WiFi FUNCTIONS
+//******************************************************************************************************************************************************************************************************
+void connectWiFi()
+{
+
+  Serial.print("ESP Board MAC Address:  ");
+  Serial.println(WiFi.macAddress());
+  pinMode(SendKey, INPUT_PULLUP); // Btn to send data
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password); // Connect to wifi
+
+  Serial.print("Connecting to WiFi:");
+  Serial.println(ssid);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    setLed(D2, 0, 255, 0, 0, 1);
+    Serial.print(".");
+    delay(500);
+    setLed(D2, 0, 0, 0, 0, 1);
+  }
+
+  Serial.println("");
+  setLed(D2, 0, 0, 255, 0, 1);
+  Serial.print("Connected to ");
+  Serial.println(ssid);
+
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+  Serial.print("Open Telnet and connect to IP:");
+  Serial.print(WiFi.localIP());
+  Serial.print(" on port ");
+  Serial.println(port);
+}
+
+void checkSerial()
+{
+  Serial.println("Checking serial");
+  WiFiClient client = server.available();
+
+  if (client)
+  {
+    Serial.println("Client Connected to Wifi");
+    if (client.connected())
+    {
+      Serial.println("Client Connected");
+      setLed(D2, 0, 0, 0, 255, 1);
+    }
+
+    while (client.connected())
+    {
+      while (client.available() > 0)
+      {
+        // read data from the connected client
+        String line = client.readStringUntil('END');
+        Serial.println("new command: " + String(line));
+        handleCommand(line);
+        client.write("OK");
+      }
+    }
+    client.stop();
+    Serial.println("Client disconnected");
+  }
+}
+//******************************************************************************************************************************************************************************************************
+// CUSTOM FUNCTIONS
+//******************************************************************************************************************************************************************************************************
 
 void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fade)
 {
@@ -589,35 +663,8 @@ byte meccanoidGetServoMotorPosition(byte bytPin, byte bytPosition)
 }
 
 ///////////////////
-/////WEBSOCKET
-
-void connectToWifi()
-{
-  // Connect to Wi-Fi
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(1000);
-    Serial.println("Connecting to WiFi..");
-  }
-
-  // Print ESP Local IP Address
-  Serial.println(WiFi.localIP());
-
-  initWebSocket();
-
-  // Route for root / web page
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send_P(200, "text/html", index_html, processor); });
-
-  // Start server
-  server.begin();
-}
-
-void notifyClients()
-{
-  ws.textAll(String("WEE"));
-}
+/////HELPERS
+///////////////////
 
 std::vector<std::string> split(const std::string &s, char delim)
 {
@@ -633,72 +680,28 @@ std::vector<std::string> split(const std::string &s, char delim)
   return result;
 }
 
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-             void *arg, uint8_t *data, size_t len)
+void handleCommand(String rawCommand)
 {
-  switch (type)
+  dataReceived = false;
+  // In order:
+  // pin
+  // part in array
+  // all next are values for the item
+  Serial.println("Received command: " + String(rawCommand));
+
+  std::vector<std::string> command = split(rawCommand.c_str(), ';');
+
+  // map pin from string to byte
+  byte pin = atoi(command[1].c_str());
+  byte partInArray = atoi(command[2].c_str());
+
+  if (strcmp(command[0].c_str(), "setled") == 0)
   {
-  case WS_EVT_CONNECT:
-    Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
-    break;
-  case WS_EVT_DISCONNECT:
-    Serial.printf("WebSocket client #%u disconnected\n", client->id());
-    break;
-  case WS_EVT_DATA:
-    handleWebSocketMessage(arg, data, len);
-    break;
-  case WS_EVT_PONG:
-  case WS_EVT_ERROR:
-    break;
-  }
-}
+    int red = atoi(command[3].c_str());
+    int green = atoi(command[4].c_str());
+    int blue = atoi(command[5].c_str());
+    int fade = atoi(command[6].c_str());
 
-void initWebSocket()
-{
-  ws.onEvent(onEvent);
-  server.addHandler(&ws);
-}
-
-String processor(const String &var)
-{
-  Serial.println(var);
-  if (var == "STATE")
-  {
-    Serial.println("STATE STATE STATE!!");
-  }
-  return String();
-}
-
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
-{
-  AwsFrameInfo *info = (AwsFrameInfo *)arg;
-  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
-  {
-    // In order:
-    // pin
-    // part in array
-    // all next are values for the item
-    data[len] = 0;
-    char *rawCommand = (char *)data;
-    Serial.println("Received command: " + String(rawCommand));
-
-    std::string s = rawCommand;
-    std::vector<std::string> command = split(s, ';');
-
-    // map pin from string to byte
-    byte pin = D2;
-    byte partInArray = atoi(command[2].c_str());
-
-    if (strcmp(command[0].c_str(), "setled") == 0)
-    {
-
-      int red = atoi(command[3].c_str());
-      int green = atoi(command[4].c_str());
-      int blue = atoi(command[5].c_str());
-      int fade = atoi(command[6].c_str());
-
-      setLed(pin, partInArray, red, green, blue, fade);
-      notifyClients();
-    }
+    setLed(pin, partInArray, red, green, blue, fade);
   }
 }
