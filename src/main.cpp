@@ -133,10 +133,10 @@ void connectWiFi()
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
-    setLed(D2, 0, 255, 0, 0, 1);
+    // setLed(D2, 0, 255, 0, 0, 1);
     Serial.print(".");
     delay(500);
-    setLed(D2, 0, 0, 0, 0, 1);
+    // setLed(D2, 0, 0, 0, 0, 1);
   }
 
   Serial.println("");
@@ -164,7 +164,7 @@ void checkSerial()
     if (client.connected())
     {
       Serial.println("Client Connected");
-      setLed(D2, 0, 0, 0, 255, 1);
+      // setLed(D2, 0, 0, 0, 255, 1);
     }
 
     while (client.connected())
@@ -172,7 +172,7 @@ void checkSerial()
       while (client.available() > 0)
       {
         // read data from the connected client
-        String line = client.readStringUntil('END');
+        String line = client.readStringUntil('\n');
         Serial.println("new command: " + String(line));
         handleCommand(line);
         client.write("OK");
@@ -206,7 +206,7 @@ void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fa
 
 void setServoLed(byte partPin, byte partInArray, byte color)
 {
-  Serial.println("Requesting " + String(partPin) + " - " + String(partInArray) + " to move to " + String(color));
+  Serial.println("Requesting " + String(partPin) + " - " + String(partInArray) + " to color to " + String(color));
 
   byte bytColour = color;
   // Ensure the position values are within end stop range
@@ -688,20 +688,38 @@ void handleCommand(String rawCommand)
   // part in array
   // all next are values for the item
   Serial.println("Received command: " + String(rawCommand));
-
-  std::vector<std::string> command = split(rawCommand.c_str(), ';');
-
-  // map pin from string to byte
-  byte pin = atoi(command[1].c_str());
-  byte partInArray = atoi(command[2].c_str());
-
-  if (strcmp(command[0].c_str(), "setled") == 0)
+  if (rawCommand.indexOf(";") > 0)
   {
-    int red = atoi(command[3].c_str());
-    int green = atoi(command[4].c_str());
-    int blue = atoi(command[5].c_str());
-    int fade = atoi(command[6].c_str());
+    std::vector<std::string> command = split(rawCommand.c_str(), ';');
 
-    setLed(pin, partInArray, red, green, blue, fade);
+    // map pin from string to byte
+    byte pin = atoi(command[1].c_str());
+    byte partInArray = atoi(command[2].c_str());
+
+    if (strcmp(command[0].c_str(), "setled") == 0)
+    {
+      int red = atoi(command[3].c_str());
+      int green = atoi(command[4].c_str());
+      int blue = atoi(command[5].c_str());
+      int fade = atoi(command[6].c_str());
+
+      setLed(pin, partInArray, red, green, blue, fade);
+    }
+    else if (strcmp(command[0].c_str(), "setservopos") == 0)
+    {
+      int angle = atoi(command[3].c_str());
+      setMotorPosition(pin, partInArray, angle);
+    }
+    else if (strcmp(command[0].c_str(), "setservoled") == 0)
+    {
+      int color = atoi(command[3].c_str());
+      // 1-7
+      setServoLed(pin, partInArray, color);
+    }
+    iterateAllPins();
+  }
+  else
+  {
+    Serial.println("Not a valid command");
   }
 }
