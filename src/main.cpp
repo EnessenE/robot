@@ -36,39 +36,42 @@ void setMotorPosition(byte partPin, byte pinInArray, byte angle);
 void setServoLed(byte partPin, byte partInArray, byte color);
 void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fade);
 
+void setAllLeds(int red, int green, int blue, int fade);
+void initializeRelevantPins();
+
 void connectWiFi();
 void checkSerial();
 
 void handleCommand(String rawCommand);
 
-const byte bytLowestDigitalPin = D0;
-const byte bytHighestDigitalPin = D8;
+const byte relevantDigitalPins[1] = {D2};
+const byte amountOfPins = sizeof(relevantDigitalPins) / sizeof(relevantDigitalPins[0]);
 
 const byte bytLowestAnalogPin = A0;
 const byte bytHighestAnalogPin = A0;
 
-PinSetup arrDigitalPinSetup[bytHighestDigitalPin + 1];
+PinSetup arrDigitalPinSetup[amountOfPins];
 PinSetup arrAnalogPinSetup[bytHighestAnalogPin + 1];
 
 // Latch
 const unsigned int intLatchDebounceInterval = 500;
 
-bool arrDigitalLatchTriggered[bytHighestDigitalPin + 1];
-unsigned long arrDigitalLatchDebounceStartTime[bytHighestDigitalPin + 1];
+bool arrDigitalLatchTriggered[amountOfPins];
+unsigned long arrDigitalLatchDebounceStartTime[amountOfPins];
 bool arrAnalogLatchTriggered[bytHighestAnalogPin + 1];
 unsigned long arrAnalogLatchDebounceStartTime[bytHighestAnalogPin + 1];
 
 // State
-byte arrCurrentValue[bytHighestDigitalPin + 1][4];
-byte arrStartValue[bytHighestDigitalPin + 1][4];
-byte arrEndValue[bytHighestDigitalPin + 1][4];
+byte arrCurrentValue[amountOfPins][4];
+byte arrStartValue[amountOfPins][4];
+byte arrEndValue[amountOfPins][4];
 
-unsigned int arrDuration[bytHighestDigitalPin + 1][4];
-unsigned long arrStartTime[bytHighestDigitalPin + 1][4];
+unsigned int arrDuration[amountOfPins][4];
+unsigned long arrStartTime[amountOfPins][4];
 
 // Meccanoid
-byte arrMeccanoidData[bytHighestDigitalPin + 1][4];
-byte arrMeccanoidType[bytHighestDigitalPin + 1][4];
+byte arrMeccanoidData[amountOfPins][4];
+byte arrMeccanoidType[amountOfPins][4];
 
 // runtime
 bool dataReceived = false;
@@ -84,15 +87,18 @@ void setup()
   Serial.begin(9600);
   delay(1000);
   Serial.println("Init");
+  Serial.println("Currently " + String(amountOfPins) + " pins");
   reset();
-  meccanoidInitialise(D2);
-  setLed(D2, 0, 255, 0, 0, 0);
+  initializeRelevantPins();
+  setAllLeds(255, 0, 0, 0);
   Serial.println("Init finished");
   connectWiFi();
 
   Serial.println("Finished with everything");
 }
 
+long lastBlinkTime;
+bool blinkToggle = false;
 void loop()
 {
   // Serial.println("Loop start");
@@ -106,12 +112,19 @@ void loop()
   // setLed(D2, 0, random(0, 255), random(0, 255), random(0, 255), 0);
 
   checkSerial();
-  // if (!dataReceived)
-  // {
-  //   setLed(D2, 0, 0, 255, 0, 1);
-  //   delay(1000);
-  //   setLed(D2, 0, 0, 0, 0, 1);
-  // }
+  if (millis() - lastBlinkTime > 1000)
+  {
+    lastBlinkTime = millis();
+    if (blinkToggle)
+    {
+      setAllLeds(0, 255, 0, 1);
+    }
+    else
+    {
+      setAllLeds(0, 0, 0, 1);
+    }
+    blinkToggle = !blinkToggle;
+  }
   // delay(1000);
 }
 
@@ -130,17 +143,29 @@ void connectWiFi()
 
   Serial.print("Connecting to WiFi:");
   Serial.println(ssid);
+  long lastWiFiBlink;
+  bool WiFiBlinkToggle = false;
   while (WiFi.status() != WL_CONNECTED)
   {
-    delay(500);
-    // setLed(D2, 0, 255, 0, 0, 1);
     Serial.print(".");
-    delay(500);
-    // setLed(D2, 0, 0, 0, 0, 1);
+    if (millis() - lastWiFiBlink > 1000)
+    {
+      lastWiFiBlink = millis();
+      if (WiFiBlinkToggle)
+      {
+        setAllLeds(0, 0, 255, 1);
+      }
+      else
+      {
+        setAllLeds(0, 0, 0, 1);
+      }
+      WiFiBlinkToggle = !WiFiBlinkToggle;
+    }
+    delay(100);
   }
 
   Serial.println("");
-  setLed(D2, 0, 0, 255, 0, 1);
+  setAllLeds(0, 255, 0, 1);
   Serial.print("Connected to ");
   Serial.println(ssid);
 
@@ -155,16 +180,14 @@ void connectWiFi()
 
 void checkSerial()
 {
-  Serial.println("Checking serial");
   WiFiClient client = server.available();
 
   if (client)
   {
-    Serial.println("Client Connected to Wifi");
     if (client.connected())
     {
       Serial.println("Client Connected");
-      // setLed(D2, 0, 0, 0, 255, 1);
+      setAllLeds(0, 0, 255, 1);
     }
 
     while (client.connected())
@@ -185,6 +208,34 @@ void checkSerial()
 //******************************************************************************************************************************************************************************************************
 // CUSTOM FUNCTIONS
 //******************************************************************************************************************************************************************************************************
+void setAllLeds(int red, int green, int blue, int fade)
+{
+  // Find the position of the LED
+
+  for (int pin = 0; pin < amountOfPins; pin++)
+  {
+    byte bytPin = relevantDigitalPins[pin];
+    for (byte partInArray = 0; partInArray < 4; partInArray++)
+    {
+      if (arrMeccanoidType[bytPin][partInArray] == 2)
+      {
+        setLed(bytPin, partInArray, red, green, blue, fade);
+      }
+    }
+  }
+}
+
+void initializeRelevantPins()
+{
+  for (int pin = 0; pin < amountOfPins; pin++)
+  {
+    Serial.println("Starting relevant pin: " + String(relevantDigitalPins[pin]));
+    meccanoidInitialise(relevantDigitalPins[pin]);
+    setAllLeds(255, 255, 255, 1);
+    Serial.println("Finished relevant pin: " + String(relevantDigitalPins[pin]));
+  }
+  Serial.println("All relevant pins started");
+}
 
 void setLed(byte partPin, byte partInArray, int red, int green, int blue, int fade)
 {
@@ -259,9 +310,9 @@ void iterateAllPins()
 {
   Serial.println("Iterating through ALL pins!");
   // Iterate through digital pins
-  for (byte bytPin = bytLowestDigitalPin; bytPin <= bytHighestDigitalPin; bytPin++)
+  for (int pin = 0; pin < amountOfPins; pin++)
   {
-
+    byte bytPin = relevantDigitalPins[pin];
     Serial.println("Pin " + String(bytPin) + " - " + String(arrDigitalPinSetup[bytPin]));
     switch (arrDigitalPinSetup[bytPin])
     {
@@ -409,11 +460,12 @@ void iterateAllPins()
 
 void reset()
 {
-  Serial.println("Resetting pins");
+  Serial.println("Resetting " + String(amountOfPins) + " pins");
   // Reset digital pins
-  for (byte bytPin = bytLowestDigitalPin; bytPin <= bytHighestDigitalPin; bytPin++)
+  for (int pin = 0; pin < amountOfPins; pin++)
   {
-    Serial.println("Resetting digital pin " + String(bytPin));
+    byte bytPin = relevantDigitalPins[pin];
+    Serial.println("Resetting digital pin (" + String(pin) + ")" + String(bytPin));
     // Pins default to unused inputs
     arrDigitalPinSetup[bytPin] = enuPinSetupUnused;
     pinMode(bytPin, INPUT);
@@ -431,6 +483,8 @@ void reset()
       arrDuration[bytPin][bytPosition] = 0;
       arrStartTime[bytPin][bytPosition] = 0;
     }
+
+    Serial.println("Finished resetting digital pin " + String(bytPin));
   }
   Serial.println("Finished going through ALL pins!");
 }
